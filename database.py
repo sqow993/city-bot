@@ -4,6 +4,22 @@ from datetime import datetime, timedelta
 DB_PATH = "city_bot.db"
 
 
+async def get_requests_page(offset: int = 0, limit: int = 5):
+    """Возвращает заявки с постраничной навигацией и общее количество."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT COUNT(*) FROM requests")
+        total_row = await cur.fetchone()
+        total = total_row[0] if total_row else 0
+
+        cur = await db.execute("""
+            SELECT * FROM requests
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        rows = await cur.fetchall()
+        return rows, total
+
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
