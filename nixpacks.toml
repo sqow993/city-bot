@@ -1,0 +1,13 @@
+# nixpacks.toml
+# Явная конфигурация сборки, чтобы Nixpacks не игнорировал requirements.txt
+
+[phases.setup]
+nixPkgs = ["python312", "pip"]
+
+[phases.install]
+# Явно указываем pip установить зависимости из файла в корне
+cmds = ["pip install --no-cache-dir -r requirements.txt"]
+
+[start]
+# Команда запуска (на случай, если Procfile не сработает)
+cmd = "python main.py"
