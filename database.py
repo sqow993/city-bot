@@ -1,122 +1,163 @@
-import sqlite3
-import logging
-from pathlib import Path
+import aiosqlite
+from datetime import datetime, timedelta
 
-log = logging.getLogger(__name__)
-
-DB_PATH = Path(__file__).parent / "users.db"
+DB_PATH = "city_bot.db"
 
 
-def init_db():
-    """Создаёт таблицы, если их нет."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    # Профиль пользователя
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            weight REAL,
-            height REAL,
-            age INTEGER,
-            gender TEXT,
-            activity TEXT,
-            daily_calories REAL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # История приёмов пищи
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS meals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            food_name TEXT,
-            weight_grams REAL,
-            calories REAL,
-            protein REAL,
-            fat REAL,
-            carbs REAL,
-            photo_path TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-    log.info("БД инициализирована.")
-
-
-def get_user(user_id: int):
-    """Возвращает словарь с данными пользователя или None."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def save_user(user_id: int, username: str = None, **fields):
-    """Создаёт или обновляет пользователя. Поля передаются как kwargs."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    existing = get_user(user_id)
-
-    if existing is None:
-        # INSERT
-        columns = ["user_id", "username"] + list(fields.keys())
-        values = [user_id, username] + list(fields.values())
-        placeholders = ",".join(["?"] * len(columns))
-        cur.execute(
-            f"INSERT INTO users ({','.join(columns)}) VALUES ({placeholders})",
-            values,
-        )
-    else:
-        # UPDATE
-        if username:
-            fields["username"] = username
-        if fields:
-            set_clause = ", ".join(f"{k} = ?" for k in fields)
-            values = list(fields.values()) + [user_id]
-            cur.execute(
-                f"UPDATE users SET {set_clause}, updated_at = CURRENT_TIMESTAMP "
-                f"WHERE user_id = ?",
-                values,
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket TEXT UNIQUE,
+                user_id INTEGER,
+                username TEXT,
+                category TEXT,
+                photo_id TEXT,
+                lat REAL,
+                lon REAL,
+                address TEXT,
+                comment TEXT,
+                status TEXT DEFAULT 'new',
+                channel_msg_id INTEGER,
+                created_at TEXT,
+                updated_at TEXT
             )
-
-    conn.commit()
-    conn.close()
-
-
-def save_meal(user_id: int, food_name: str, weight_grams: float,
-              calories: float, protein: float, fat: float, carbs: float,
-              photo_path: str = None):
-    """Сохраняет приём пищи."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO meals
-            (user_id, food_name, weight_grams, calories, protein, fat, carbs, photo_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, food_name, weight_grams, calories, protein, fat, carbs, photo_path))
-    conn.commit()
-    conn.close()
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                joined_at TEXT,
+                last_seen TEXT
+            )
+        """)
+        await db.commit()
 
 
-def get_today_calories(user_id: int) -> float:
-    """Сумма калорий за сегодня."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT COALESCE(SUM(calories), 0) FROM meals
-        WHERE user_id = ? AND DATE(created_at) = DATE('now')
-    """, (user_id,))
-    total = cur.fetchone()[0]
-    conn.close()
-    return total
+# ---------- Пользователи ----------
+
+async def upsert_user(user_id: int, username: str, full_name: str):
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO users (user_id, username, full_name, joined_at, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                full_name = excluded.full_name,
+                last_seen = excluded.last_seen
+        """, (user_id, username, full_name, now, now))
+        await db.commit()
+
+
+async def get_all_users():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT user_id FROM users")
+        return await cur.fetchall()
+
+
+async def count_users() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM users")
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+
+# ---------- Заявки ----------
+
+async def create_request(ticket: str, user_id: int, username: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        now = datetime.now().isoformat()
+        cur = await db.execute("""
+            INSERT INTO requests (ticket, user_id, username, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'new', ?, ?)
+        """, (ticket, user_id, username, now, now))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def update_request(req_id: int, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = datetime.now().isoformat()
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [req_id]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE requests SET {cols} WHERE id = ?", vals)
+        await db.commit()
+
+
+async def get_request(req_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM requests WHERE id = ?", (req_id,))
+        return await cur.fetchone()
+
+
+async def get_last_request(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT * FROM requests WHERE user_id = ?
+            ORDER BY id DESC LIMIT 1
+        """, (user_id,))
+        return await cur.fetchone()
+
+
+async def get_user_requests(user_id: int, limit: int = 10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT * FROM requests WHERE user_id = ?
+            ORDER BY id DESC LIMIT ?
+        """, (user_id, limit))
+        return await cur.fetchall()
+
+
+async def get_stats() -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT status, COUNT(*) as cnt FROM requests GROUP BY status")
+        rows = await cur.fetchall()
+        return {r["status"]: r["cnt"] for r in rows}
+
+
+# ---------- Для отчёта ----------
+
+async def get_requests_for_period(days: int = 7):
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT * FROM requests
+            WHERE created_at >= ?
+            ORDER BY created_at DESC
+        """, (since,))
+        return await cur.fetchall()
+
+
+async def get_top_problems(days: int = 7, limit: int = 5):
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT address, category, COUNT(*) as cnt
+            FROM requests
+            WHERE created_at >= ? AND address IS NOT NULL AND address != ''
+            GROUP BY address, category
+            ORDER BY cnt DESC
+            LIMIT ?
+        """, (since, limit))
+        return await cur.fetchall()
+
+
+async def get_last_requests(limit: int = 10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT * FROM requests ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return await cur.fetchall()

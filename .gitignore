@@ -1,25 +1,27 @@
-# Виртуальное окружение
-venv/
-env/
-.venv/
-
-# Переменные окружения (ТОКЕН!)
+# Секреты
 .env
-*.env
-
-# Python-кэш
-__pycache__/
-*.pyc
-*.pyo
 
 # База данных
 *.db
-users.db
+*.sqlite
+*.sqlite3
 
-# Временные файлы
-temp/
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
 
-# Настройки IDE
-.vscode/
+# PDF-отчёты (временные)
+*.pdf
+
+# Системные
+.DS_Store
+Thumbs.db
 .idea/
+.vscode/
+
+# Логи
+*.log
